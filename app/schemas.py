@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Union
 
 class PatientInfo(BaseModel):
     name: str
@@ -11,7 +11,7 @@ class PatientInfo(BaseModel):
 class PredictionResponse(BaseModel):
     success: bool
     predictions: Dict[str, float]
-    positive_findings: List[Dict[str, float]]
+    positive_findings: List[Dict[str, Union[str, float]]]
     confidence: float
     message: Optional[str] = None
 
