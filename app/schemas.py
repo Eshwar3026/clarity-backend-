@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Dict, List, Union
+from typing import Optional, Dict, List
 
 class PatientInfo(BaseModel):
     name: str
@@ -10,26 +10,37 @@ class PatientInfo(BaseModel):
 
 class PredictionResponse(BaseModel):
     success: bool
+    model_used: str
     predictions: Dict[str, float]
-    positive_findings: List[Dict[str, Union[str, float]]]
+    positive_findings: List[Dict[str, float]]
     confidence: float
     message: Optional[str] = None
 
 class ReportRequest(BaseModel):
     patient_info: PatientInfo
     predictions: Dict[str, float]
+    model_used: str
 
 class ReportResponse(BaseModel):
     success: bool
     patient_info: PatientInfo
     predictions: Dict[str, float]
+    model_used: str
     report: str
     message: Optional[str] = None
 
-class GradCAMResponse(BaseModel):
+class HeatmapRequest(BaseModel):
+    model_name: str
+    method: str
+    layer: str
+
+class HeatmapResponse(BaseModel):
     success: bool
+    model_used: str
+    method_used: str
+    layer_used: str
     predictions: Dict[str, float]
-    gradcam_image: str
+    heatmap_image: str
     top_disease: str
     top_probability: float
     message: Optional[str] = None

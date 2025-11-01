@@ -1,19 +1,18 @@
 import os
-import shutil
-from pathlib import Path
-from app.config import settings
+import uuid
+from datetime import datetime
 
-def save_upload_file(uploaded_file, filename: str) -> str:
-    file_path = os.path.join(settings.UPLOAD_DIR, filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(uploaded_file.file, buffer)
-    return file_path
+def save_uploaded_file(upload_file) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_id = str(uuid.uuid4())[:8]
+    filename = f"{timestamp}_{unique_id}_{upload_file.filename}"
+    filepath = os.path.join(settings.UPLOAD_DIR, filename)
+    
+    with open(filepath, "wb") as f:
+        f.write(upload_file.file.read())
+    
+    return filepath
 
-def cleanup_file(file_path: str):
-    if os.path.exists(file_path):
-        os.remove(file_path)
-
-def validate_image(file_path: str) -> bool:
-    valid_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp'}
-    ext = Path(file_path).suffix.lower()
-    return ext in valid_extensions
+def validate_image_file(filename: str) -> bool:
+    allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff'}
+    return os.path.splitext(filename)[1].lower() in allowed_extensions

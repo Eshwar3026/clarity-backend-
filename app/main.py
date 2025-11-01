@@ -1,126 +1,186 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import os
-from pydantic import ValidationError
-
 from app.config import settings
-from app.schemas import PredictionResponse, ReportResponse, GradCAMResponse, PatientInfo, ReportRequest
-from app.inference import predictor
-from app.gradcam import gradcam_gen
+from app.schemas import *
+from app.models import densenet_predictor, resnet_predictor
+from app.heatmap_gen import HeatmapGenerator
 from app.gemini_report import generate_report
-from app.utils import save_upload_file, cleanup_file, validate_image
+from app.utils import save_uploaded_file, validate_image_file
+import os
 
-app = FastAPI(
-    title="CLARITY - Chest X-Ray Diagnosis API",
-    description="AI-powered chest X-ray analysis with DenseNet121",
-    version="1.0.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.on_event("startup")
-async def startup():
-    print("✅ Model loaded")
-    print(f"✅ Device: {predictor.device}")
+app = FastAPI(title="CLARITY", version="2.0.0")
 
 @app.get("/")
-async def root():
-    return {
-        "message": "CLARITY API",
-        "version": "1.0.0",
-        "endpoints": ["/predict", "/predict/report", "/predict/gradcam", "/docs"]
-    }
+def root():
+    return {"message": "CLARITY API v2.0", "models": ["densenet121", "resnet152"]}
 
 @app.get("/health")
-async def health():
+def health():
     return {"status": "healthy"}
 
-@app.post("/predict", response_model=PredictionResponse)
-async def predict(file: UploadFile = File(...)):
+@app.post("/predict")
+async def predict(file: UploadFile = File(...), model: str = Form("densenet121")):
     try:
-        file_path = save_upload_file(file, file.filename)
+        if not validate_image_file(file.filename):
+            raise HTTPException(status_code=400, detail="Invalid file format")
         
-        if not validate_image(file_path):
-            cleanup_file(file_path)
-            raise HTTPException(status_code=400, detail="Invalid image format")
+        if file.size > settings.MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="File too large")
         
-        result = predictor.predict(file_path, threshold=settings.CONFIDENCE_THRESHOLD)
-        cleanup_file(file_path)
+        filepath = save_uploaded_file(file)
+        
+        if model == "densenet121":
+            result = densenet_predictor.predict(filepath)
+            model_used = "DenseNet121"
+        elif model == "resnet152":
+            result = resnet_predictor.predict(filepath)
+            model_used = "ResNet152"
+        else:
+            raise HTTPException(status_code=400, detail="Invalid model name")
+        
+        os.remove(filepath)
         
         return PredictionResponse(
             success=True,
+            model_used=model_used,
             predictions=result['predictions'],
             positive_findings=result['positive_findings'],
             confidence=result['confidence']
         )
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
 
-@app.post("/predict/report", response_model=ReportResponse)
+@app.post("/predict/report")
 async def predict_report(
     file: UploadFile = File(...),
     name: str = Form(...),
     age: int = Form(...),
     gender: str = Form(...),
     patient_id: str = Form(None),
-    email: str = Form(None)
+    email: str = Form(None),
+    model: str = Form("densenet121")
 ):
     try:
-        file_path = save_upload_file(file, file.filename)
+        if not validate_image_file(file.filename):
+            raise HTTPException(status_code=400, detail="Invalid file format")
         
-        if not validate_image(file_path):
-            cleanup_file(file_path)
-            raise HTTPException(status_code=400, detail="Invalid image format")
+        filepath = save_uploaded_file(file)
         
-        result = predictor.predict(file_path, threshold=settings.CONFIDENCE_THRESHOLD)
+        if model == "densenet121":
+            result = densenet_predictor.predict(filepath)
+            model_used = "DenseNet121"
+        elif model == "resnet152":
+            result = resnet_predictor.predict(filepath)
+            model_used = "ResNet152"
+        else:
+            raise HTTPException(status_code=400, detail="Invalid model name")
         
-        patient_info = PatientInfo(
-            name=name,
-            age=age,
-            gender=gender,
-            patient_id=patient_id,
-            email=email
-        )
+        patient_info = {
+            "name": name,
+            "age": age,
+            "gender": gender,
+            "patient_id": patient_id,
+            "email": email
+        }
         
-        report = generate_report(patient_info, result['predictions'])
-        cleanup_file(file_path)
+        report = generate_report(patient_info, result['predictions'], model_used)
+        
+        os.remove(filepath)
         
         return ReportResponse(
             success=True,
             patient_info=patient_info,
             predictions=result['predictions'],
+            model_used=model_used,
             report=report
         )
-    except ValidationError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
 
-@app.post("/predict/gradcam", response_model=GradCAMResponse)
-async def predict_gradcam(file: UploadFile = File(...)):
+@app.post("/predict/heatmap")
+async def predict_heatmap(
+    file: UploadFile = File(...),
+    model: str = Form("densenet121"),
+    method: str = Form("gradcam"),
+    layer: str = Form(None)
+):
     try:
-        file_path = save_upload_file(file, file.filename)
+        if not validate_image_file(file.filename):
+            raise HTTPException(status_code=400, detail="Invalid file format")
         
-        if not validate_image(file_path):
-            cleanup_file(file_path)
-            raise HTTPException(status_code=400, detail="Invalid image format")
+        if model == "densenet121":
+            if method not in settings.HEATMAP_METHODS_DENSENET:
+                raise HTTPException(status_code=400, detail=f"Invalid method for DenseNet121. Allowed: {settings.HEATMAP_METHODS_DENSENET}")
+            if layer is None:
+                layer = settings.DENSENET121_LAYERS[-1]
+            model_used = "DenseNet121"
+        elif model == "resnet152":
+            if method not in settings.HEATMAP_METHODS_RESNET:
+                raise HTTPException(status_code=400, detail=f"Invalid method for ResNet152. Allowed: {settings.HEATMAP_METHODS_RESNET}")
+            if layer is None:
+                layer = settings.RESNET152_LAYERS[-1]
+            model_used = "ResNet152"
+        else:
+            raise HTTPException(status_code=400, detail="Invalid model name")
         
-        result = gradcam_gen.generate(file_path)
-        cleanup_file(file_path)
+        filepath = save_uploaded_file(file)
         
-        return GradCAMResponse(
+        generator = HeatmapGenerator(model)
+        result = generator.generate(filepath, method, layer)
+        
+        os.remove(filepath)
+        
+        return HeatmapResponse(
             success=True,
+            model_used=model_used,
+            method_used=method,
+            layer_used=layer,
             predictions=result['predictions'],
-            gradcam_image=result['gradcam_image'],
+            heatmap_image=result['heatmap_image'],
             top_disease=result['top_disease'],
             top_probability=result['top_probability']
         )
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/config/layers/{model_name}")
+def get_layers(model_name: str):
+    try:
+        if model_name == "densenet121":
+            return {"model": "DenseNet121", "layers": settings.DENSENET121_LAYERS}
+        elif model_name == "resnet152":
+            return {"model": "ResNet152", "layers": settings.RESNET152_LAYERS}
+        else:
+            raise HTTPException(status_code=400, detail="Invalid model name")
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/config/methods/{model_name}")
+def get_methods(model_name: str):
+    try:
+        if model_name == "densenet121":
+            return {"model": "DenseNet121", "methods": settings.HEATMAP_METHODS_DENSENET}
+        elif model_name == "resnet152":
+            return {"model": "ResNet152", "methods": settings.HEATMAP_METHODS_RESNET}
+        else:
+            raise HTTPException(status_code=400, detail="Invalid model name")
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
