@@ -124,3 +124,14 @@ class ResNet152Predictor:
 
 densenet_predictor = DenseNet121Predictor()
 resnet_predictor = ResNet152Predictor()
+
+def get_transform():
+    # Return the transforms of the DenseNet predictor (or ResNet, choose consistent)
+    return densenet_predictor.transforms
+
+def get_model(model_name: str):
+    if model_name == "densenet121":
+        return densenet_predictor.model
+    elif model_name == "resnet152":
+        return resnet_predictor.model
+    return None

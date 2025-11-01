@@ -17,6 +17,8 @@ import cv2
 from pytorch_grad_cam import GradCAM, GradCAMPlusPlus, LayerCAM, ScoreCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from app.config import settings
+from app.models import get_transform, get_model
+from app.gemini_report import generate_report_with_image
 
 app = FastAPI(title="CLARITY", version="2.0.0")
 
@@ -166,52 +168,55 @@ async def predict_report(
         
         image_data = await file.read()
         img = Image.open(io.BytesIO(image_data)).convert('RGB')
+        transform = get_transform()
         input_tensor = transform(img).unsqueeze(0).to(DEVICE)
         
-        if model == "densenet121":
-            if model_densenet is None:
-                raise HTTPException(status_code=500, detail="DenseNet121 not loaded")
-            with torch.no_grad():
-                logits = model_densenet(input_tensor)
-            model_used = "DenseNet121"
-        elif model == "resnet152":
-            if model_resnet is None:
-                raise HTTPException(status_code=500, detail="ResNet152 not loaded")
-            with torch.no_grad():
-                logits = model_resnet(input_tensor)
-            model_used = "ResNet152"
-        else:
-            raise HTTPException(status_code=400, detail="Invalid model")
+        model_obj = get_model(model)
+        
+        if model_obj is None:
+            raise HTTPException(status_code=500, detail=f"{model} not loaded")
+        
+        with torch.no_grad():
+            logits = model_obj(input_tensor)
         
         probs = sigmoid(logits.detach().cpu().numpy()[0])
         predictions = {disease: float(prob) for disease, prob in zip(CLASS_NAMES, probs)}
         
         positive_findings = [disease for disease, prob in zip(CLASS_NAMES, probs) if prob >= settings.CONFIDENCE_THRESHOLD]
         
-        report = f"""
-CLARITY Medical Report
-{'='*60}
-Patient: {name} | Age: {age} | Gender: {gender}
-Patient ID: {patient_id or 'N/A'} | Email: {email or 'N/A'}
-Model: {model_used}
-
-Positive Findings: {', '.join(positive_findings) if positive_findings else 'None'}
-
-Detailed Predictions:
-{chr(10).join([f'- {d}: {p:.2%}' for d, p in predictions.items() if p >= 0.5])}
-        """.strip()
+        model_used = "DenseNet121" if model == "densenet121" else "ResNet152"
+        
+        patient_info = {
+            "name": name,
+            "age": age,
+            "gender": gender,
+            "patient_id": patient_id,
+            "email": email
+        }
+        
+        gemini_report, warning = generate_report_with_image(
+            patient_info=patient_info,
+            predictions=predictions,
+            model_used=model_used,
+            image_data=image_data
+        )
         
         return {
             "success": True,
-            "patient_info": {"name": name, "age": age, "gender": gender, "patient_id": patient_id, "email": email},
+            "patient_info": patient_info,
             "predictions": predictions,
+            "positive_findings": positive_findings,
             "model_used": model_used,
-            "report": report
+            "report": gemini_report,
+            "warning": warning
         }
         
+    except HTTPException as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=e.status_code, content={"success": False, "message": e.detail})
     except Exception as e:
+        from fastapi.responses import JSONResponse
         return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
-
 
 @app.post("/predict/heatmap")
 async def predict_heatmap(
