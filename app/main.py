@@ -51,6 +51,9 @@ def load_models():
         model_densenet = models.densenet121(weights=None)
         model_densenet.classifier = nn.Linear(model_densenet.classifier.in_features, len(CLASS_NAMES))
         model_densenet.load_state_dict(torch.load(dn_path, map_location=DEVICE))
+        for module in model_densenet.modules():
+            if isinstance(module, nn.ReLU):
+                module.inplace = False
         model_densenet.eval().to(DEVICE)
     except Exception as e:
         model_densenet = None
@@ -59,6 +62,9 @@ def load_models():
         model_resnet = models.resnet152(weights=None)
         model_resnet.fc = nn.Linear(model_resnet.fc.in_features, len(CLASS_NAMES))
         model_resnet.load_state_dict(torch.load(rn_path, map_location=DEVICE))
+        for module in model_resnet.modules():
+            if isinstance(module, nn.ReLU):
+                module.inplace = False
         model_resnet.eval().to(DEVICE)
     except Exception as e:
         model_resnet = None
