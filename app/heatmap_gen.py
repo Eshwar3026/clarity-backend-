@@ -76,12 +76,15 @@ def _encode_heatmap(
     heatmap_array: np.ndarray,
     base_image: Optional[Image.Image] = None,
     overlay_alpha: float = 0.55,
+    *,
+    colormap: int = cv2.COLORMAP_JET,
+    blend_with_base: bool = True,
 ) -> str:
     heatmap_uint8 = np.uint8(np.clip(heatmap_array * 255.0, 0, 255))
-    colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+    colored = cv2.applyColorMap(heatmap_uint8, colormap)
     colored = cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
 
-    if base_image is not None:
+    if base_image is not None and blend_with_base:
         base_array = np.array(base_image.convert("RGB"))
         base_height, base_width = base_array.shape[:2]
 
@@ -166,6 +169,37 @@ def _generate_saliency_heatmap(
     grad_array = grads.detach().cpu().numpy()[0]
     heatmap = np.max(np.abs(grad_array), axis=0)
     return _normalize_heatmap(heatmap)
+
+
+def _render_integrated_gradients_visual(
+    heatmap_array: np.ndarray,
+    base_image: Optional[Image.Image],
+) -> str:
+    styled = _normalize_heatmap(heatmap_array).astype(np.float32)
+    styled = np.power(np.clip(styled, 0.0, 1.0), 0.65).astype(np.float32)
+
+    if base_image is not None:
+        grayscale = (
+            base_image.resize((settings.IMAGE_SIZE, settings.IMAGE_SIZE))
+            .convert("L")
+        )
+        grayscale_array = np.array(grayscale, dtype=np.uint8)
+        edges = cv2.Canny(grayscale_array, 24, 120)
+        edges = cv2.GaussianBlur(edges, (5, 5), 0)
+        edges_norm = edges.astype(np.float32) / 255.0
+        styled = np.clip(styled + edges_norm * 0.25, 0.0, 1.0)
+
+    styled = cv2.normalize(
+        styled, None, alpha=0.0, beta=1.0, norm_type=cv2.NORM_MINMAX
+    )
+
+    return _encode_heatmap(
+        styled,
+        base_image=None,
+        overlay_alpha=0.0,
+        colormap=cv2.COLORMAP_HOT,
+        blend_with_base=False,
+    )
 
 
 def _generate_shap_heatmap(
@@ -280,7 +314,13 @@ def generate_heatmap(
         )
 
     heatmap_array = np.clip(heatmap_array, 0, 1)
-    heatmap_base64 = _encode_heatmap(heatmap_array, base_image=image)
+    if method_key == "integrated_gradients":
+        heatmap_base64 = _render_integrated_gradients_visual(
+            heatmap_array,
+            image,
+        )
+    else:
+        heatmap_base64 = _encode_heatmap(heatmap_array, base_image=image)
 
     return {
         "success": True,
