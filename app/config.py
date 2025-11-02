@@ -55,8 +55,20 @@ class Settings:
         "layer4.2",
     ]
     
-    HEATMAP_METHODS_DENSENET = ["gradcam", "gradcam_pp", "layercam", "scorecam", "shap"]
-    HEATMAP_METHODS_RESNET = ["gradcam", "gradcam_pp", "layercam", "scorecam"]
+    HEATMAP_METHODS_DENSENET = [
+        "gradcam_pp",
+        "layercam",
+        "scorecam",
+        "integrated_gradients",
+        "saliency",
+    ]
+    HEATMAP_METHODS_RESNET = [
+        "gradcam_pp",
+        "layercam",
+        "scorecam",
+        "integrated_gradients",
+        "saliency",
+    ]
 
 settings = Settings()
 

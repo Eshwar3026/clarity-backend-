@@ -128,7 +128,7 @@ async def predict_report(
 async def predict_heatmap(
     file: UploadFile = File(...),
     model: str = Form("densenet121"),
-    method: str = Form("gradcam"),
+    method: str = Form("gradcam_pp"),
     layer: Optional[str] = Form(None),
 ):
     _validate_file(file)

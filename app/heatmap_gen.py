@@ -16,6 +16,12 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from app.config import settings
 from app.models import MODEL_LABELS, get_predictor
 
+try:  # pragma: no cover - optional dependency
+    from captum.attr import IntegratedGradients, Saliency
+except ImportError:  # pragma: no cover - optional dependency
+    IntegratedGradients = None  # type: ignore[assignment]
+    Saliency = None  # type: ignore[assignment]
+
 
 class HeatmapGenerationError(RuntimeError):
     """Raised when heatmap generation fails."""
@@ -103,6 +109,65 @@ def _encode_heatmap(
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
+def _normalize_heatmap(map_array: np.ndarray) -> np.ndarray:
+    if map_array.size == 0:
+        return np.zeros_like(map_array, dtype=np.float32)
+
+    map_array = map_array.astype(np.float32)
+    maximum = float(np.max(map_array))
+    if maximum <= 0:
+        return np.zeros_like(map_array, dtype=np.float32)
+    normalized = np.clip(map_array / maximum, 0.0, 1.0)
+    return normalized
+
+
+def _generate_integrated_gradients_heatmap(
+    model: torch.nn.Module,
+    input_tensor: torch.Tensor,
+    target_index: int,
+    steps: int = 32,
+) -> np.ndarray:
+    if IntegratedGradients is None:  # pragma: no cover - optional dependency
+        raise ValueError("Integrated Gradients heatmaps require captum to be installed")
+
+    attribution_input = input_tensor.detach().clone().requires_grad_(True)
+    baseline = torch.zeros_like(attribution_input)
+    ig = IntegratedGradients(model)
+
+    with torch.enable_grad():
+        model.zero_grad(set_to_none=True)
+        attributions = ig.attribute(
+            attribution_input,
+            baselines=baseline,
+            target=target_index,
+            n_steps=steps,
+        )
+
+    attrs = attributions.detach().cpu().numpy()[0]
+    heatmap = np.mean(np.abs(attrs), axis=0)
+    return _normalize_heatmap(heatmap)
+
+
+def _generate_saliency_heatmap(
+    model: torch.nn.Module,
+    input_tensor: torch.Tensor,
+    target_index: int,
+) -> np.ndarray:
+    if Saliency is None:  # pragma: no cover - optional dependency
+        raise ValueError("Saliency heatmaps require captum to be installed")
+
+    saliency = Saliency(model)
+    attribution_input = input_tensor.detach().clone().requires_grad_(True)
+
+    with torch.enable_grad():
+        model.zero_grad(set_to_none=True)
+        grads = saliency.attribute(attribution_input, target=target_index)
+
+    grad_array = grads.detach().cpu().numpy()[0]
+    heatmap = np.max(np.abs(grad_array), axis=0)
+    return _normalize_heatmap(heatmap)
+
+
 def _generate_shap_heatmap(
     model: torch.nn.Module,
     input_tensor: torch.Tensor,
@@ -172,27 +237,25 @@ def generate_heatmap(
     top_index = int(np.argmax(probabilities))
     top_disease = settings.LABEL_COLS[top_index]
 
-    heatmap_array: Optional[np.ndarray] = None
+    heatmap_array: Optional[np.ndarray]
     method_used = method_key
 
-    if method_key == "shap":
-        try:
-            heatmap_array = _generate_shap_heatmap(
-                predictor.model,
-                input_tensor,
-                predictor.device,
-                top_index,
-            )
-        except HeatmapGenerationError:
-            heatmap_array = None
-            method_used = "gradcam"
-
-    if heatmap_array is None:
+    if method_key == "integrated_gradients":
+        heatmap_array = _generate_integrated_gradients_heatmap(
+            predictor.model,
+            input_tensor,
+            top_index,
+        )
+    elif method_key == "saliency":
+        heatmap_array = _generate_saliency_heatmap(
+            predictor.model,
+            input_tensor,
+            top_index,
+        )
+    else:
         target_layer = dict(predictor.model.named_modules())[layer_key]
 
-        if method_used == "gradcam":
-            cam_class = GradCAM
-        elif method_used == "gradcam_pp":
+        if method_used == "gradcam_pp":
             cam_class = GradCAMPlusPlus
         elif method_used == "layercam":
             cam_class = LayerCAM
