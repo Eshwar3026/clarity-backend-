@@ -66,12 +66,38 @@ def _build_predictions(probabilities: Sequence[float]) -> dict:
     }
 
 
-def _encode_heatmap(heatmap_array: np.ndarray) -> str:
+def _encode_heatmap(
+    heatmap_array: np.ndarray,
+    base_image: Optional[Image.Image] = None,
+    overlay_alpha: float = 0.55,
+) -> str:
     heatmap_uint8 = np.uint8(np.clip(heatmap_array * 255.0, 0, 255))
     colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
     colored = cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
 
-    image = Image.fromarray(colored.astype(np.uint8))
+    if base_image is not None:
+        base_array = np.array(base_image.convert("RGB"))
+        base_height, base_width = base_array.shape[:2]
+
+        if (base_height, base_width) != colored.shape[:2]:
+            colored = cv2.resize(
+                colored,
+                (base_width, base_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+        overlay = cv2.addWeighted(
+            colored.astype(np.float32),
+            overlay_alpha,
+            base_array.astype(np.float32),
+            1.0 - overlay_alpha,
+            0.0,
+        )
+        output_array = np.clip(overlay, 0, 255).astype(np.uint8)
+    else:
+        output_array = colored.astype(np.uint8)
+
+    image = Image.fromarray(output_array)
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
@@ -191,7 +217,7 @@ def generate_heatmap(
         )
 
     heatmap_array = np.clip(heatmap_array, 0, 1)
-    heatmap_base64 = _encode_heatmap(heatmap_array)
+    heatmap_base64 = _encode_heatmap(heatmap_array, base_image=image)
 
     return {
         "success": True,
