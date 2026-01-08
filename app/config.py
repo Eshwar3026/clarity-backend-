@@ -10,7 +10,8 @@ class Settings:
     IMAGE_SIZE = 224
     DEVICE = os.getenv("DEVICE", "cuda")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-pro")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash")
+    GEMINI_RATE_LIMIT_COOLDOWN = int(os.getenv("GEMINI_RATE_LIMIT_COOLDOWN", "60"))
     
     LABEL_COLS = [
         'Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Effusion',

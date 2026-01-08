@@ -1,10 +1,14 @@
 # app/gemini_report.py
 
-import logging
 import base64
-from typing import Tuple, Optional
+import logging
+import math
+import re
+import time
+from typing import Optional, Tuple
 
 import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
 
 from app.config import settings
 
@@ -14,6 +18,61 @@ if settings.GEMINI_API_KEY:
     genai.configure(api_key=settings.GEMINI_API_KEY)
 else:
     logger.warning("GEMINI_API_KEY is not configured.")
+
+_QUOTA_RETRY_PATTERN = re.compile(r"retry in (?P<seconds>\\d+(?:\\.\\d+)?)s", re.IGNORECASE)
+_quota_cooldown_until = 0.0
+
+
+def _seconds_until_quota_reset() -> int:
+    remaining = _quota_cooldown_until - time.monotonic()
+    if remaining <= 0:
+        return 0
+    return int(math.ceil(remaining))
+
+
+def _in_quota_cooldown() -> bool:
+    return _seconds_until_quota_reset() > 0
+
+
+def _schedule_quota_cooldown(delay_hint: Optional[float]) -> int:
+    global _quota_cooldown_until
+    cooldown = delay_hint if delay_hint and delay_hint > 0 else settings.GEMINI_RATE_LIMIT_COOLDOWN
+    cooldown = max(int(math.ceil(cooldown)), settings.GEMINI_RATE_LIMIT_COOLDOWN)
+    _quota_cooldown_until = time.monotonic() + cooldown
+    return cooldown
+
+
+def _extract_retry_delay_seconds(exc: Exception) -> Optional[float]:
+    retry_info = getattr(exc, "retry_info", None)
+    retry_delay = getattr(retry_info, "retry_delay", None)
+    if retry_delay is not None:
+        seconds = getattr(retry_delay, "seconds", 0)
+        nanos = getattr(retry_delay, "nanos", 0)
+        total = seconds + nanos / 1_000_000_000
+        if total > 0:
+            return total
+
+    message = str(exc)
+    match = _QUOTA_RETRY_PATTERN.search(message)
+    if match:
+        try:
+            return float(match.group("seconds"))
+        except ValueError:
+            return None
+
+    return None
+
+
+def _build_quota_warning(retry_after: Optional[int]) -> str:
+    if retry_after and retry_after > 0:
+        return (
+            f"Gemini quota exceeded for model {settings.GEMINI_MODEL}; "
+            f"retry after ~{retry_after}s. Showing rule-based summary instead."
+        )
+    return (
+        f"Gemini quota exceeded for model {settings.GEMINI_MODEL}; "
+        "showing rule-based summary until quota resets."
+    )
 
 
 def _format_findings(predictions: dict, limit: int = 5) -> list:
@@ -89,6 +148,14 @@ def generate_report_with_image(
         warning = "Gemini API key is not configured; returning a rule-based summary instead."
         return fallback_report, warning
 
+    if _in_quota_cooldown():
+        warning = _build_quota_warning(_seconds_until_quota_reset())
+        return fallback_report, warning
+
+    if _in_quota_cooldown():
+        warning = _build_quota_warning(_seconds_until_quota_reset())
+        return fallback_report, warning
+
     try:
         positive_findings = [
             disease for disease, prob in predictions.items()
@@ -148,7 +215,11 @@ Generate a professional, concise medical report suitable for clinical use.
         logger.warning("Gemini API response did not include text; using fallback summary.")
         warning = "Gemini response was empty; returning a rule-based summary instead."
         return fallback_report, warning
-
+    except google_exceptions.ResourceExhausted as exc:
+        logger.warning("Gemini quota exhausted: %s", exc)
+        cooldown = _schedule_quota_cooldown(_extract_retry_delay_seconds(exc))
+        warning = _build_quota_warning(cooldown)
+        return fallback_report, warning
     except Exception as exc:
         logger.exception("Gemini report generation failed: %s", exc)
         warning = "Gemini report generation failed; showing fallback summary instead."
@@ -216,7 +287,11 @@ Keep the report clear and professional for medical use.
         logger.warning("Gemini API response did not include text; using fallback summary.")
         warning = "Gemini response was empty; returning a rule-based summary instead."
         return fallback_report, warning
-
+    except google_exceptions.ResourceExhausted as exc:
+        logger.warning("Gemini quota exhausted: %s", exc)
+        cooldown = _schedule_quota_cooldown(_extract_retry_delay_seconds(exc))
+        warning = _build_quota_warning(cooldown)
+        return fallback_report, warning
     except Exception as exc:
         logger.exception("Gemini report generation failed: %s", exc)
         warning = "Gemini report generation failed; showing fallback summary instead."
